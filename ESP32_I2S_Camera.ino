@@ -725,113 +725,193 @@ void testarVSYNCRemoto()
   Serial.println("========== FIM TESTE ==========");
 }
 
+// void setup()
+// {
+//   Serial.begin(115200);
+
+//   // =====================================================
+//   // TRIGGER
+//   // =====================================================
+
+//   //pinMode(TRIGGER, OUTPUT);
+//   //digitalWrite(TRIGGER, LOW);
+
+//   //pinMode(TRIGGER_IN, INPUT);
+
+//   //Serial.println("[TRIGGER] GPIO26 = OUTPUT");
+//   //Serial.println("[TRIGGER] GPIO23 = INPUT");
+
+//   // =====================================================
+//   // SETUP ORIGINAL
+//   // =====================================================
+//   // pinMode(SLAVE_READY, INPUT);
+//   pinMode(SLAVE_READY, INPUT_PULLDOWN);
+//   pinMode(VSYNC_REMOTO, INPUT); // GPIO 23 precisa ser entrada de alta impedância!
+
+//   Serial.println("[SETUP] Inicio");
+
+//   wifiMulti.addAP(ssid1, password1);
+
+//   Serial.println("[WIFI] Conectando...");
+
+//   if (wifiMulti.run() == WL_CONNECTED)
+//   {
+//     Serial.println("");
+//     Serial.println("[WIFI] WiFi connected");
+//     Serial.println("[WIFI] IP address: ");
+//     Serial.println(WiFi.localIP());
+//   }
+
+//   // =====================================================
+//   // PAUSA DE SINCRONISMO DE BOOT (MESTRE / ESCRAVO)
+//   // =====================================================
+//   // Aguarda 5 segundos para garantir que o ESP32 #2 (Escravo) 
+//   // já tenha ligado e terminado o boot ANTES do XCLK ser ativado.
+//   //Serial.println("[CLOCK MASTER] Aguardando 5s para o boot do ESP32 #2 estabilizar...");
+//   //delay(5000); 
+
+//   // Serial.println("[CAMERA #1] Antes de criar OV7670 (Ativando XCLK Mestre)");
+
+//   // =====================================================
+//   // HANDSHAKE COM A ESCRAVA
+//   // =====================================================
+
+//   Serial.println("[CLOCK MASTER] Aguardando READY da Escrava...");
+
+//   while (digitalRead(SLAVE_READY) == LOW)
+//   {
+//     delay(10);
+//   }
+
+//   Serial.println("[CLOCK MASTER] READY recebido!");
+//   Serial.println("[CLOCK MASTER] Escrava inicializada.");
+//   Serial.println("[CLOCK MASTER] Ativando XCLK...");
+
+//   Serial.println("[CAMERA #1] Antes de criar OV7670 (Ativando XCLK Mestre)");
+
+//   camera = new OV7670(
+//       OV7670::Mode::QQVGA_RGB565,
+//       SIOD, SIOC, VSYNC, HREF, XCLK, PCLK,
+//       D0, D1, D2, D3, D4, D5, D6, D7
+//   );
+//   // xclkAtivo = true;
+
+//   Serial.println("[CAMERA] OV7670 criada");
+
+//   Serial.println("[BMP] Antes");
+
+//   BMP::construct16BitHeader(
+//       bmpHeader,
+//       camera->xres,
+//       camera->yres
+//   );
+
+//   Serial.println("[BMP] OK");
+
+//   Serial.println("[TFT] Antes");
+
+//   tft.initR(INITR_BLACKTAB);
+//   tft.fillScreen(0);
+
+//   Serial.println("[TFT] OK");
+
+//   Serial.println("[SERVER] Antes");
+
+//   server.begin();
+
+//   Serial.println("[SERVER] OK");
+
+//   Serial.println("[TRIGGER] Sistema pronto.");
+
+//   // medirVSYNC();
+
+//   // medirVSYNCRemoto();
+//   // testarVSYNCRemoto();
+
+//   // medirDefasagemVSYNC();
+//   // medirVSYNCsJuntas();
+// }
+
+void medirVSYNCLocal() {
+  Serial.println("\n========== MEDICAO VSYNC LOCAL (CAM 1 - MESTRE) ==========");
+  pinMode(VSYNC_LOCAL, INPUT);
+
+  for (int i = 0; i < 10; i++) {
+    // 1. Espera subida REAL (HIGH > 10us)
+    unsigned long tStartHigh = 0;
+    while (true) {
+      while (digitalRead(VSYNC_LOCAL) == LOW) { delayMicroseconds(1); }
+      tStartHigh = micros();
+      delayMicroseconds(10); 
+      if (digitalRead(VSYNC_LOCAL) == HIGH) break;
+    }
+
+    // 2. Espera descida REAL (LOW > 10us)
+    unsigned long tStartLow = 0;
+    while (true) {
+      while (digitalRead(VSYNC_LOCAL) == HIGH) { delayMicroseconds(1); }
+      tStartLow = micros();
+      delayMicroseconds(10);
+      if (digitalRead(VSYNC_LOCAL) == LOW) break;
+    }
+
+    // 3. Espera próxima subida REAL
+    unsigned long tEnd = 0;
+    while (true) {
+      while (digitalRead(VSYNC_LOCAL) == LOW) { delayMicroseconds(1); }
+      tEnd = micros();
+      delayMicroseconds(10);
+      if (digitalRead(VSYNC_LOCAL) == HIGH) break;
+    }
+
+    unsigned long highTime = tStartLow - tStartHigh;
+    unsigned long lowTime = tEnd - tStartLow;
+    unsigned long periodo = highTime + lowTime;
+
+    Serial.printf("[VSYNC CAM1] Ciclo %d | HIGH = %lu us | LOW = %lu us | PERIODO = %lu us\n", 
+                  i + 1, highTime, lowTime, periodo);
+  }
+  Serial.println("========== FIM VSYNC LOCAL ==========\n");
+}
+
 void setup()
 {
   Serial.begin(115200);
 
-  // =====================================================
-  // TRIGGER
-  // =====================================================
-
-  //pinMode(TRIGGER, OUTPUT);
-  //digitalWrite(TRIGGER, LOW);
-
-  //pinMode(TRIGGER_IN, INPUT);
-
-  //Serial.println("[TRIGGER] GPIO26 = OUTPUT");
-  //Serial.println("[TRIGGER] GPIO23 = INPUT");
-
-  // =====================================================
-  // SETUP ORIGINAL
-  // =====================================================
-  // pinMode(SLAVE_READY, INPUT);
+  // Configuração dos pinos de entrada/sincronismo
   pinMode(SLAVE_READY, INPUT_PULLDOWN);
-  pinMode(VSYNC_REMOTO, INPUT); // GPIO 23 precisa ser entrada de alta impedância!
-
-  Serial.println("[SETUP] Inicio");
+  pinMode(VSYNC_REMOTO, INPUT); // GPIO 23 mantido como entrada pura
 
   wifiMulti.addAP(ssid1, password1);
-
-  Serial.println("[WIFI] Conectando...");
-
-  if (wifiMulti.run() == WL_CONNECTED)
-  {
-    Serial.println("");
-    Serial.println("[WIFI] WiFi connected");
-    Serial.println("[WIFI] IP address: ");
-    Serial.println(WiFi.localIP());
+  if (wifiMulti.run() == WL_CONNECTED) {
+    Serial.println("[WIFI] Conectado!");
   }
 
-  // =====================================================
-  // PAUSA DE SINCRONISMO DE BOOT (MESTRE / ESCRAVO)
-  // =====================================================
-  // Aguarda 5 segundos para garantir que o ESP32 #2 (Escravo) 
-  // já tenha ligado e terminado o boot ANTES do XCLK ser ativado.
-  //Serial.println("[CLOCK MASTER] Aguardando 5s para o boot do ESP32 #2 estabilizar...");
-  //delay(5000); 
-
-  // Serial.println("[CAMERA #1] Antes de criar OV7670 (Ativando XCLK Mestre)");
-
-  // =====================================================
-  // HANDSHAKE COM A ESCRAVA
-  // =====================================================
-
+  // Handshake
   Serial.println("[CLOCK MASTER] Aguardando READY da Escrava...");
-
   while (digitalRead(SLAVE_READY) == LOW)
   {
-    delay(10);
+    delay(10); // Evita acionamento do Watchdog
   }
 
-  Serial.println("[CLOCK MASTER] READY recebido!");
-  Serial.println("[CLOCK MASTER] Escrava inicializada.");
-  Serial.println("[CLOCK MASTER] Ativando XCLK...");
+  Serial.println("[CLOCK MASTER] READY recebido! Ativando XCLK...");
 
-  Serial.println("[CAMERA #1] Antes de criar OV7670 (Ativando XCLK Mestre)");
-
+  // Inicializa a câmera local
   camera = new OV7670(
       OV7670::Mode::QQVGA_RGB565,
       SIOD, SIOC, VSYNC, HREF, XCLK, PCLK,
       D0, D1, D2, D3, D4, D5, D6, D7
   );
-  // xclkAtivo = true;
 
-  Serial.println("[CAMERA] OV7670 criada");
-
-  Serial.println("[BMP] Antes");
-
-  BMP::construct16BitHeader(
-      bmpHeader,
-      camera->xres,
-      camera->yres
-  );
-
-  Serial.println("[BMP] OK");
-
-  Serial.println("[TFT] Antes");
-
+  BMP::construct16BitHeader(bmpHeader, camera->xres, camera->yres);
   tft.initR(INITR_BLACKTAB);
   tft.fillScreen(0);
-
-  Serial.println("[TFT] OK");
-
-  Serial.println("[SERVER] Antes");
-
   server.begin();
 
-  Serial.println("[SERVER] OK");
+  xclkAtivo = true;
 
-  Serial.println("[TRIGGER] Sistema pronto.");
-
-  medirVSYNC();
-
-  // medirVSYNCRemoto();
-  // testarVSYNCRemoto();
-
-  // medirDefasagemVSYNC();
-  // medirVSYNCsJuntas();
+  medirVSYNCLocal();
 }
-
 
 /*
  * =========================================================
