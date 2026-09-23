@@ -39,7 +39,8 @@ const int VSYNC_LOCAL = VSYNC; // Pino 34
 
 // Sincronismo remoto (Câmera 2 - Escravo) 
 // Usando o GPIO 23 liberado do antigo trigger físico!
-const int VSYNC_REMOTO = 23;
+// const int VSYNC_REMOTO = 23;
+const int VSYNC_EVENT_IN = 23;
 
 const int TFT_DC = 2;
 const int TFT_CS = 5;
@@ -59,6 +60,9 @@ unsigned char bmpHeader[BMP::headerSize];
 
 volatile bool captureRequested = false;
 bool xclkAtivo = false;
+
+volatile bool eventoEscravaRecebido = false;
+volatile uint32_t timestampEventoEscrava = 0;
 
 void monitorarReadyEscrava()
 {
@@ -278,196 +282,196 @@ void medirVSYNC() {
   Serial.println("========== FIM VSYNC ==========");
 }
 
-void medirVSYNCRemoto()
-{
-  Serial.println();
-  Serial.println("========== MEDICAO VSYNC REMOTO ==========");
-  Serial.println("[VSYNC #2] Medindo periodo por 10 ciclos...");
+// void medirVSYNCRemoto()
+// {
+//   Serial.println();
+//   Serial.println("========== MEDICAO VSYNC REMOTO ==========");
+//   Serial.println("[VSYNC #2] Medindo periodo por 10 ciclos...");
 
-  pinMode(VSYNC_REMOTO, INPUT);
+//   pinMode(VSYNC_REMOTO, INPUT);
 
-  unsigned long t0, t1;
-  unsigned long periodo;
+//   unsigned long t0, t1;
+//   unsigned long periodo;
 
-  // Garante que começamos em LOW
-  while (digitalRead(VSYNC_REMOTO) == HIGH);
+//   // Garante que começamos em LOW
+//   while (digitalRead(VSYNC_REMOTO) == HIGH);
 
-  for (int i = 0; i < 10; i++)
-  {
-    // Espera subida
-    while (digitalRead(VSYNC_REMOTO) == LOW);
-    t0 = micros();
+//   for (int i = 0; i < 10; i++)
+//   {
+//     // Espera subida
+//     while (digitalRead(VSYNC_REMOTO) == LOW);
+//     t0 = micros();
 
-    // Espera próxima subida
-    while (digitalRead(VSYNC_REMOTO) == HIGH);
-    while (digitalRead(VSYNC_REMOTO) == LOW);
+//     // Espera próxima subida
+//     while (digitalRead(VSYNC_REMOTO) == HIGH);
+//     while (digitalRead(VSYNC_REMOTO) == LOW);
 
-    t1 = micros();
+//     t1 = micros();
 
-    periodo = t1 - t0;
+//     periodo = t1 - t0;
 
-    Serial.print("[VSYNC #2] Ciclo ");
-    Serial.print(i + 1);
-    Serial.print(" | PERIODO = ");
-    Serial.print(periodo);
-    Serial.println(" us");
-  }
+//     Serial.print("[VSYNC #2] Ciclo ");
+//     Serial.print(i + 1);
+//     Serial.print(" | PERIODO = ");
+//     Serial.print(periodo);
+//     Serial.println(" us");
+//   }
 
-  Serial.println("[VSYNC #2] Medicao concluida.");
-  Serial.println("========== FIM VSYNC #2 ==========");
-}
-
-
-void medirDefasagemVSYNC()
-{
-  Serial.println();
-  Serial.println("========== DEFASAGEM VSYNC ==========");
-  Serial.println("[FASE] Medindo 20 ciclos...");
-
-  pinMode(VSYNC_LOCAL, INPUT);
-  pinMode(VSYNC_REMOTO, INPUT);
-
-  bool estadoLocalAnterior = digitalRead(VSYNC_LOCAL);
-  bool estadoRemotoAnterior = digitalRead(VSYNC_REMOTO);
-
-  unsigned long tLocal[20];
-  unsigned long tRemoto[20];
-
-  int nLocal = 0;
-  int nRemoto = 0;
-
-  while (nLocal < 20 || nRemoto < 20)
-  {
-    bool estadoLocal = digitalRead(VSYNC_LOCAL);
-    bool estadoRemoto = digitalRead(VSYNC_REMOTO);
-
-    // Detecta subida do VSYNC da câmera 1
-    if (estadoLocal == HIGH && estadoLocalAnterior == LOW)
-    {
-      if (nLocal < 20)
-      {
-        tLocal[nLocal] = micros();
-        nLocal++;
-      }
-    }
-
-    // Detecta subida do VSYNC da câmera 2
-    if (estadoRemoto == HIGH && estadoRemotoAnterior == LOW)
-    {
-      if (nRemoto < 20)
-      {
-        tRemoto[nRemoto] = micros();
-        nRemoto++;
-      }
-    }
-
-    estadoLocalAnterior = estadoLocal;
-    estadoRemotoAnterior = estadoRemoto;
-  }
-
-  Serial.println();
-  Serial.println("[FASE] Timestamps capturados.");
-  Serial.print("[FASE] Camera 1: ");
-  Serial.println(nLocal);
-
-  Serial.print("[FASE] Camera 2: ");
-  Serial.println(nRemoto);
-
-  Serial.println();
-  Serial.println("[FASE] Diferenca entre VSYNCs:");
-
-  for (int i = 0; i < 20; i++)
-  {
-    long delta = (long)tRemoto[i] - (long)tLocal[i];
-
-    // Corrige caso os dois sinais tenham sido
-    // associados a ciclos consecutivos.
-
-    while (delta > 39900)
-      delta -= 79800;
-
-    while (delta < -39900)
-      delta += 79800;
+//   Serial.println("[VSYNC #2] Medicao concluida.");
+//   Serial.println("========== FIM VSYNC #2 ==========");
+// }
 
 
-    Serial.print("[FASE] Ciclo ");
-    Serial.print(i + 1);
-    Serial.print(" | VSYNC2 - VSYNC1 = ");
-    Serial.print(delta);
-    Serial.println(" us");
-  }
+// void medirDefasagemVSYNC()
+// {
+//   Serial.println();
+//   Serial.println("========== DEFASAGEM VSYNC ==========");
+//   Serial.println("[FASE] Medindo 20 ciclos...");
 
-  Serial.println("[FASE] Medicao concluida.");
-  Serial.println("========== FIM DEFASAGEM ==========");
-}
+//   pinMode(VSYNC_LOCAL, INPUT);
+//   pinMode(VSYNC_REMOTO, INPUT);
 
-void medirVSYNCsJuntas()
-{
-  Serial.println();
-  Serial.println("========== MEDICAO DOS DOIS VSYNCs ==========");
+//   bool estadoLocalAnterior = digitalRead(VSYNC_LOCAL);
+//   bool estadoRemotoAnterior = digitalRead(VSYNC_REMOTO);
 
-  pinMode(VSYNC_LOCAL, INPUT);
-  pinMode(VSYNC_REMOTO, INPUT);
+//   unsigned long tLocal[20];
+//   unsigned long tRemoto[20];
 
-  int estadoLocalAnterior  = digitalRead(VSYNC_LOCAL);
-  int estadoRemotoAnterior = digitalRead(VSYNC_REMOTO);
+//   int nLocal = 0;
+//   int nRemoto = 0;
 
-  unsigned long inicio = micros();
+//   while (nLocal < 20 || nRemoto < 20)
+//   {
+//     bool estadoLocal = digitalRead(VSYNC_LOCAL);
+//     bool estadoRemoto = digitalRead(VSYNC_REMOTO);
 
-  unsigned long ultimoLocal  = inicio;
-  unsigned long ultimoRemoto = inicio;
+//     // Detecta subida do VSYNC da câmera 1
+//     if (estadoLocal == HIGH && estadoLocalAnterior == LOW)
+//     {
+//       if (nLocal < 20)
+//       {
+//         tLocal[nLocal] = micros();
+//         nLocal++;
+//       }
+//     }
 
-  int ciclosLocal = 0;
-  int ciclosRemoto = 0;
+//     // Detecta subida do VSYNC da câmera 2
+//     if (estadoRemoto == HIGH && estadoRemotoAnterior == LOW)
+//     {
+//       if (nRemoto < 20)
+//       {
+//         tRemoto[nRemoto] = micros();
+//         nRemoto++;
+//       }
+//     }
 
-  while ((micros() - inicio) < 1000000UL)
-  {
-    unsigned long agora = micros();
+//     estadoLocalAnterior = estadoLocal;
+//     estadoRemotoAnterior = estadoRemoto;
+//   }
 
-    int local  = digitalRead(VSYNC_LOCAL);
-    int remoto = digitalRead(VSYNC_REMOTO);
+//   Serial.println();
+//   Serial.println("[FASE] Timestamps capturados.");
+//   Serial.print("[FASE] Camera 1: ");
+//   Serial.println(nLocal);
 
-    // Detecta subida do VSYNC da câmera #1
-    if (local == HIGH && estadoLocalAnterior == LOW)
-    {
-      if (ciclosLocal > 0)
-      {
-        Serial.print("[CAM 1] Periodo = ");
-        Serial.print(agora - ultimoLocal);
-        Serial.println(" us");
-      }
+//   Serial.print("[FASE] Camera 2: ");
+//   Serial.println(nRemoto);
 
-      ultimoLocal = agora;
-      ciclosLocal++;
-    }
+//   Serial.println();
+//   Serial.println("[FASE] Diferenca entre VSYNCs:");
 
-    // Detecta subida do VSYNC da câmera #2
-    if (remoto == HIGH && estadoRemotoAnterior == LOW)
-    {
-      if (ciclosRemoto > 0)
-      {
-        Serial.print("[CAM 2] Periodo = ");
-        Serial.print(agora - ultimoRemoto);
-        Serial.println(" us");
-      }
+//   for (int i = 0; i < 20; i++)
+//   {
+//     long delta = (long)tRemoto[i] - (long)tLocal[i];
 
-      ultimoRemoto = agora;
-      ciclosRemoto++;
-    }
+//     // Corrige caso os dois sinais tenham sido
+//     // associados a ciclos consecutivos.
 
-    estadoLocalAnterior  = local;
-    estadoRemotoAnterior = remoto;
-  }
+//     while (delta > 39900)
+//       delta -= 79800;
 
-  Serial.println();
-  Serial.print("[CAM 1] Ciclos detectados: ");
-  Serial.println(ciclosLocal);
+//     while (delta < -39900)
+//       delta += 79800;
 
-  Serial.print("[CAM 2] Ciclos detectados: ");
-  Serial.println(ciclosRemoto);
 
-  Serial.println("========== FIM MEDICAO ==========");
-}
+//     Serial.print("[FASE] Ciclo ");
+//     Serial.print(i + 1);
+//     Serial.print(" | VSYNC2 - VSYNC1 = ");
+//     Serial.print(delta);
+//     Serial.println(" us");
+//   }
+
+//   Serial.println("[FASE] Medicao concluida.");
+//   Serial.println("========== FIM DEFASAGEM ==========");
+// }
+
+// void medirVSYNCsJuntas()
+// {
+//   Serial.println();
+//   Serial.println("========== MEDICAO DOS DOIS VSYNCs ==========");
+
+//   pinMode(VSYNC_LOCAL, INPUT);
+//   pinMode(VSYNC_REMOTO, INPUT);
+
+//   int estadoLocalAnterior  = digitalRead(VSYNC_LOCAL);
+//   int estadoRemotoAnterior = digitalRead(VSYNC_REMOTO);
+
+//   unsigned long inicio = micros();
+
+//   unsigned long ultimoLocal  = inicio;
+//   unsigned long ultimoRemoto = inicio;
+
+//   int ciclosLocal = 0;
+//   int ciclosRemoto = 0;
+
+//   while ((micros() - inicio) < 1000000UL)
+//   {
+//     unsigned long agora = micros();
+
+//     int local  = digitalRead(VSYNC_LOCAL);
+//     int remoto = digitalRead(VSYNC_REMOTO);
+
+//     // Detecta subida do VSYNC da câmera #1
+//     if (local == HIGH && estadoLocalAnterior == LOW)
+//     {
+//       if (ciclosLocal > 0)
+//       {
+//         Serial.print("[CAM 1] Periodo = ");
+//         Serial.print(agora - ultimoLocal);
+//         Serial.println(" us");
+//       }
+
+//       ultimoLocal = agora;
+//       ciclosLocal++;
+//     }
+
+//     // Detecta subida do VSYNC da câmera #2
+//     if (remoto == HIGH && estadoRemotoAnterior == LOW)
+//     {
+//       if (ciclosRemoto > 0)
+//       {
+//         Serial.print("[CAM 2] Periodo = ");
+//         Serial.print(agora - ultimoRemoto);
+//         Serial.println(" us");
+//       }
+
+//       ultimoRemoto = agora;
+//       ciclosRemoto++;
+//     }
+
+//     estadoLocalAnterior  = local;
+//     estadoRemotoAnterior = remoto;
+//   }
+
+//   Serial.println();
+//   Serial.print("[CAM 1] Ciclos detectados: ");
+//   Serial.println(ciclosLocal);
+
+//   Serial.print("[CAM 2] Ciclos detectados: ");
+//   Serial.println(ciclosRemoto);
+
+//   Serial.println("========== FIM MEDICAO ==========");
+// }
 
 /*
  * =========================================================
@@ -683,48 +687,6 @@ void triggerCapture()
  * =========================================================
  */
 
-void testarVSYNCRemoto()
-{
-  Serial.println();
-  Serial.println("========== TESTE BRUTO VSYNC CAM 2 ==========");
-
-  pinMode(VSYNC_REMOTO, INPUT);
-
-  int estadoAnterior = digitalRead(VSYNC_REMOTO);
-
-  unsigned long inicio = micros();
-  unsigned long ultimaMudanca = inicio;
-
-  int mudancas = 0;
-
-  while ((micros() - inicio) < 1000000UL)
-  {
-    int estadoAtual = digitalRead(VSYNC_REMOTO);
-
-    if (estadoAtual != estadoAnterior)
-    {
-      unsigned long agora = micros();
-
-      Serial.print("[CAM 2] ");
-      Serial.print(estadoAnterior);
-      Serial.print(" -> ");
-      Serial.print(estadoAtual);
-      Serial.print(" | dt = ");
-      Serial.print(agora - ultimaMudanca);
-      Serial.println(" us");
-
-      ultimaMudanca = agora;
-      estadoAnterior = estadoAtual;
-      mudancas++;
-    }
-  }
-
-  Serial.print("[CAM 2] Mudancas em 1 segundo = ");
-  Serial.println(mudancas);
-
-  Serial.println("========== FIM TESTE ==========");
-}
-
 // void setup()
 // {
 //   Serial.begin(115200);
@@ -874,13 +836,19 @@ void medirVSYNCLocal() {
   Serial.println("========== FIM VSYNC LOCAL ==========\n");
 }
 
+void IRAM_ATTR eventoEscravaISR()
+{
+  timestampEventoEscrava = micros();
+  eventoEscravaRecebido = true;
+}
+
 void setup()
 {
   Serial.begin(115200);
 
   // Configuração dos pinos de entrada/sincronismo
   pinMode(SLAVE_READY, INPUT_PULLDOWN);
-  pinMode(VSYNC_REMOTO, INPUT); // GPIO 23 mantido como entrada pura
+  // pinMode(VSYNC_REMOTO, INPUT); // GPIO 23 mantido como entrada pura
 
   wifiMulti.addAP(ssid1, password1);
   if (wifiMulti.run() == WL_CONNECTED) {
@@ -910,7 +878,11 @@ void setup()
 
   xclkAtivo = true;
 
-  medirVSYNCLocal();
+  pinMode(VSYNC_EVENT_IN, INPUT_PULLDOWN);
+
+  Serial.println("[SYNC] GPIO23 configurado como entrada de evento da escrava.");
+
+  // medirVSYNCLocal();
 }
 
 /*
@@ -949,10 +921,144 @@ void displayRGB565(
  * =========================================================
  */
 
+// void loop()
+// {
+//   monitorarReadyEscrava();
+//   serve();
+
+//   static int vsyncAnterior = LOW;
+//   static int eventoEscravaAnterior = LOW;
+
+//   int vsyncAtual = digitalRead(VSYNC);
+//   int eventoEscravaAtual = digitalRead(VSYNC_EVENT_IN);
+
+//   // VSYNC da própria mestre
+//   if (vsyncAtual == HIGH && vsyncAnterior == LOW)
+//   {
+//     uint32_t tMestre = micros();
+
+//     Serial.print("[SYNC] VSYNC MESTRE: ");
+//     Serial.println(tMestre);
+//   }
+
+//   // Pulso enviado pela escrava
+//   if (eventoEscravaAtual == HIGH && eventoEscravaAnterior == LOW)
+//   {
+//     uint32_t tEscrava = micros();
+
+//     Serial.print("[SYNC] EVENTO ESCRAVA: ");
+//     Serial.println(tEscrava);
+//   }
+
+//   vsyncAnterior = vsyncAtual;
+//   eventoEscravaAnterior = eventoEscravaAtual;
+
+//   if (captureRequested)
+//   {
+//     captureRequested = false;
+
+//     Serial.println("[CAPTURE] Trigger recebido.");
+
+//     Serial.println(
+//       "[CAPTURE] Capturando proximo frame..."
+//     );
+
+//     camera->oneFrame();
+
+//     Serial.println(
+//       "[CAPTURE] Frame capturado."
+//     );
+
+//     displayRGB565(
+//       camera->frame,
+//       camera->xres,
+//       camera->yres
+//     );
+//   }
+// }
 void loop()
 {
   monitorarReadyEscrava();
   serve();
+
+  // ============================================================
+  // MEDICAO DE FASE - VSYNC MESTRE x EVENTO DA ESCRAVA
+  // ============================================================
+
+  static int vsyncAnterior = LOW;
+  static int eventoEscravaAnterior = LOW;
+
+  static uint32_t vsyncAnteriorTempo = 0;
+  static uint32_t vsyncAtualTempo = 0;
+
+  // ------------------------------------------------------------
+  // Detecta borda de subida do VSYNC da câmera mestre
+  // ------------------------------------------------------------
+  int vsyncAtual = digitalRead(VSYNC);
+
+  if (vsyncAtual == HIGH && vsyncAnterior == LOW)
+  {
+    vsyncAnteriorTempo = vsyncAtualTempo;
+    vsyncAtualTempo = micros();
+
+    if (vsyncAnteriorTempo != 0)
+    {
+      Serial.print("[SYNC] VSYNC mestre: ");
+      Serial.print(vsyncAtualTempo);
+
+      Serial.print(" | periodo = ");
+      Serial.print(vsyncAtualTempo - vsyncAnteriorTempo);
+
+      Serial.println(" us");
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Detecta borda de subida do pulso enviado pela escrava
+  // ------------------------------------------------------------
+  int eventoEscravaAtual = digitalRead(VSYNC_EVENT_IN);
+
+  if (eventoEscravaAtual == HIGH &&
+      eventoEscravaAnterior == LOW)
+  {
+    uint32_t tEvento = micros();
+
+    // Diferença em relação ao VSYNC mestre anterior
+    long deltaAnterior =
+        (long)tEvento - (long)vsyncAnteriorTempo;
+
+    // Diferença em relação ao VSYNC mestre atual
+    long deltaAtual =
+        (long)tEvento - (long)vsyncAtualTempo;
+
+    // Escolhe o VSYNC mestre temporalmente mais próximo
+    long delta;
+
+    if (abs(deltaAnterior) <= abs(deltaAtual))
+    {
+      delta = deltaAnterior;
+    }
+    else
+    {
+      delta = deltaAtual;
+    }
+
+    Serial.print("[SYNC] EVENTO escrava = ");
+    Serial.print(tEvento);
+
+    Serial.print(" | delta VSYNC mestre = ");
+    Serial.print(delta);
+
+    Serial.println(" us");
+  }
+
+  vsyncAnterior = vsyncAtual;
+  eventoEscravaAnterior = eventoEscravaAtual;
+
+
+  // ============================================================
+  // CAPTURA NORMAL DA CAMERA
+  // ============================================================
 
   if (captureRequested)
   {
@@ -960,15 +1066,11 @@ void loop()
 
     Serial.println("[CAPTURE] Trigger recebido.");
 
-    Serial.println(
-      "[CAPTURE] Capturando proximo frame..."
-    );
+    Serial.println("[CAPTURE] Capturando proximo frame...");
 
     camera->oneFrame();
 
-    Serial.println(
-      "[CAPTURE] Frame capturado."
-    );
+    Serial.println("[CAPTURE] Frame capturado.");
 
     displayRGB565(
       camera->frame,
