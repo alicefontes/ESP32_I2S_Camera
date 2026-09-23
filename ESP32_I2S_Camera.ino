@@ -9,7 +9,7 @@
 #include "BMP.h"
 
 #include "driver/pcnt.h"
-
+#include "esp32-hal-rmt.h"
 
 const int SIOD = 21;
 const int SIOC = 22;
@@ -40,11 +40,30 @@ const int VSYNC_LOCAL = VSYNC; // Pino 34
 // Sincronismo remoto (Câmera 2 - Escravo) 
 // Usando o GPIO 23 liberado do antigo trigger físico!
 // const int VSYNC_REMOTO = 23;
-const int VSYNC_EVENT_IN = 23;
 
 const int TFT_DC = 2;
 const int TFT_CS = 5;
 
+rmt_obj_t *rmtVsyncIn = nullptr;
+
+#define VSYNC_EVENT_IN 23
+
+rmt_data_t rmtBuffer[8];
+size_t rmtBufferSize = 8;
+
+rmt_obj_t *rmtVsyncLocal = nullptr;
+
+#define VSYNC_LOCAL_RMT VSYNC
+
+rmt_data_t rmtLocalBuffer[8];
+size_t rmtLocalBufferSize = 8;
+
+
+uint32_t timestampVsyncMestre = 0;
+uint32_t timestampVsyncEscrava = 0;
+
+bool vsyncMestreRecebido = false;
+bool vsyncEscravaRecebido = false;
 
 #define ssid1        "Wonderland"
 #define password1    "Fontes1995!"
@@ -846,45 +865,148 @@ void setup()
 {
   Serial.begin(115200);
 
-  // Configuração dos pinos de entrada/sincronismo
+  // ============================================================
+  // CONFIGURAÇÃO DOS PINOS
+  // ============================================================
+
   pinMode(SLAVE_READY, INPUT_PULLDOWN);
-  // pinMode(VSYNC_REMOTO, INPUT); // GPIO 23 mantido como entrada pura
+
+  // GPIO23 recebe o pulso/evento de VSYNC enviado pela escrava.
+  pinMode(VSYNC_EVENT_IN, INPUT);
+
+  // GPIO34 = VSYNC da câmera mestre.
+  // Será capturado pelo RMT, não por polling.
+  pinMode(VSYNC_LOCAL_RMT, INPUT);
 
   wifiMulti.addAP(ssid1, password1);
-  if (wifiMulti.run() == WL_CONNECTED) {
+
+  if (wifiMulti.run() == WL_CONNECTED)
+  {
     Serial.println("[WIFI] Conectado!");
   }
 
-  // Handshake
+  // ============================================================
+  // HANDSHAKE
+  // ============================================================
+
   Serial.println("[CLOCK MASTER] Aguardando READY da Escrava...");
+
   while (digitalRead(SLAVE_READY) == LOW)
   {
-    delay(10); // Evita acionamento do Watchdog
+    delay(10);
   }
 
   Serial.println("[CLOCK MASTER] READY recebido! Ativando XCLK...");
 
-  // Inicializa a câmera local
+  // ============================================================
+  // CÂMERA LOCAL
+  // ============================================================
+
   camera = new OV7670(
       OV7670::Mode::QQVGA_RGB565,
       SIOD, SIOC, VSYNC, HREF, XCLK, PCLK,
       D0, D1, D2, D3, D4, D5, D6, D7
   );
 
-  BMP::construct16BitHeader(bmpHeader, camera->xres, camera->yres);
+  BMP::construct16BitHeader(
+      bmpHeader,
+      camera->xres,
+      camera->yres
+  );
+
   tft.initR(INITR_BLACKTAB);
   tft.fillScreen(0);
+
   server.begin();
 
   xclkAtivo = true;
 
-  pinMode(VSYNC_EVENT_IN, INPUT_PULLDOWN);
 
-  Serial.println("[SYNC] GPIO23 configurado como entrada de evento da escrava.");
+  // ============================================================
+  // RMT RX - VSYNC DA ESCRAVA
+  // GPIO32 escrava -> GPIO23 mestre
+  // ============================================================
 
-  // medirVSYNCLocal();
+  rmtVsyncIn = rmtInit(
+      VSYNC_EVENT_IN,
+      false,       // RX
+      RMT_MEM_64
+  );
+
+  if (rmtVsyncIn == nullptr)
+  {
+    Serial.println("[RMT] ERRO ao inicializar RX GPIO23.");
+  }
+  else
+  {
+    float tickReal = rmtSetTick(rmtVsyncIn, 100.0);
+
+    Serial.print("[RMT] RX GPIO23 inicializado. Tick = ");
+    Serial.print(tickReal);
+    Serial.println(" ns");
+
+    // 2 us = 20 ticks de 100 ns
+    rmtSetRxThreshold(rmtVsyncIn, 20);
+
+    Serial.println("[RMT] RX escrava aguardando eventos...");
+
+    rmtReadAsync(
+        rmtVsyncIn,
+        rmtBuffer,
+        rmtBufferSize,
+        nullptr,
+        false,
+        0
+    );
+  }
+
+
+  // ============================================================
+  // RMT RX - VSYNC DA MESTRE
+  // GPIO34 = VSYNC da câmera mestre
+  // ============================================================
+
+  rmtVsyncLocal = rmtInit(
+      VSYNC_LOCAL_RMT,
+      false,       // RX
+      RMT_MEM_64
+  );
+
+  if (rmtVsyncLocal == nullptr)
+  {
+    Serial.println("[RMT] ERRO ao inicializar RX GPIO34.");
+  }
+  else
+  {
+    float tickRealLocal = rmtSetTick(
+        rmtVsyncLocal,
+        100.0
+    );
+
+    Serial.print("[RMT] RX GPIO34 inicializado. Tick = ");
+    Serial.print(tickRealLocal);
+    Serial.println(" ns");
+
+    // 2 us = 20 ticks de 100 ns
+    rmtSetRxThreshold(
+        rmtVsyncLocal,
+        20
+    );
+
+    Serial.println(
+        "[RMT] RX VSYNC mestre aguardando eventos..."
+    );
+
+    rmtReadAsync(
+        rmtVsyncLocal,
+        rmtLocalBuffer,
+        rmtLocalBufferSize,
+        nullptr,
+        false,
+        0
+    );
+  }
 }
-
 /*
  * =========================================================
  * DISPLAY
@@ -981,83 +1103,146 @@ void loop()
   monitorarReadyEscrava();
   serve();
 
+
   // ============================================================
-  // MEDICAO DE FASE - VSYNC MESTRE x EVENTO DA ESCRAVA
+  // RMT RX - VSYNC DA MESTRE
+  // GPIO34
   // ============================================================
 
-  static int vsyncAnterior = LOW;
-  static int eventoEscravaAnterior = LOW;
-
-  static uint32_t vsyncAnteriorTempo = 0;
-  static uint32_t vsyncAtualTempo = 0;
-
-  // ------------------------------------------------------------
-  // Detecta borda de subida do VSYNC da câmera mestre
-  // ------------------------------------------------------------
-  int vsyncAtual = digitalRead(VSYNC);
-
-  if (vsyncAtual == HIGH && vsyncAnterior == LOW)
+  if (rmtVsyncLocal != nullptr &&
+      rmtReceiveCompleted(rmtVsyncLocal))
   {
-    vsyncAnteriorTempo = vsyncAtualTempo;
-    vsyncAtualTempo = micros();
+    // Momento em que o evento foi detectado pelo software.
+    // A borda em si foi capturada pelo periférico RMT.
 
-    if (vsyncAnteriorTempo != 0)
+    timestampVsyncMestre = micros();
+
+    vsyncMestreRecebido = true;
+
+    Serial.print("[RMT LOCAL] VSYNC MESTRE = ");
+    Serial.println(timestampVsyncMestre);
+
+    // ----------------------------------------------------------
+    // Mostra o símbolo capturado
+    // ----------------------------------------------------------
+
+    if (rmtLocalBufferSize > 0)
     {
-      Serial.print("[SYNC] VSYNC mestre: ");
-      Serial.print(vsyncAtualTempo);
+      Serial.print("[RMT LOCAL] L0=");
+      Serial.print(rmtLocalBuffer[0].level0);
 
-      Serial.print(" | periodo = ");
-      Serial.print(vsyncAtualTempo - vsyncAnteriorTempo);
+      Serial.print(" T0=");
+      Serial.print(rmtLocalBuffer[0].duration0);
 
-      Serial.println(" us");
+      Serial.print(" | L1=");
+      Serial.print(rmtLocalBuffer[0].level1);
+
+      Serial.print(" T1=");
+      Serial.println(rmtLocalBuffer[0].duration1);
     }
+
+    // ----------------------------------------------------------
+    // Rearma imediatamente
+    // ----------------------------------------------------------
+
+    rmtLocalBufferSize = 8;
+
+    rmtReadAsync(
+        rmtVsyncLocal,
+        rmtLocalBuffer,
+        rmtLocalBufferSize,
+        nullptr,
+        false,
+        0
+    );
   }
 
-  // ------------------------------------------------------------
-  // Detecta borda de subida do pulso enviado pela escrava
-  // ------------------------------------------------------------
-  int eventoEscravaAtual = digitalRead(VSYNC_EVENT_IN);
 
-  if (eventoEscravaAtual == HIGH &&
-      eventoEscravaAnterior == LOW)
+  // ============================================================
+  // RMT RX - VSYNC DA ESCRAVA
+  // GPIO23
+  // ============================================================
+
+  if (rmtVsyncIn != nullptr &&
+      rmtReceiveCompleted(rmtVsyncIn))
   {
-    uint32_t tEvento = micros();
+    timestampVsyncEscrava = micros();
 
-    // Diferença em relação ao VSYNC mestre anterior
-    long deltaAnterior =
-        (long)tEvento - (long)vsyncAnteriorTempo;
+    vsyncEscravaRecebido = true;
 
-    // Diferença em relação ao VSYNC mestre atual
-    long deltaAtual =
-        (long)tEvento - (long)vsyncAtualTempo;
+    Serial.print("[RMT REMOTO] VSYNC ESCRAVA = ");
+    Serial.println(timestampVsyncEscrava);
 
-    // Escolhe o VSYNC mestre temporalmente mais próximo
-    long delta;
+    // ----------------------------------------------------------
+    // Mostra o símbolo capturado
+    // ----------------------------------------------------------
 
-    if (abs(deltaAnterior) <= abs(deltaAtual))
+    if (rmtBufferSize > 0)
     {
-      delta = deltaAnterior;
-    }
-    else
-    {
-      delta = deltaAtual;
+      Serial.print("[RMT REMOTO] L0=");
+      Serial.print(rmtBuffer[0].level0);
+
+      Serial.print(" T0=");
+      Serial.print(rmtBuffer[0].duration0);
+
+      Serial.print(" | L1=");
+      Serial.print(rmtBuffer[0].level1);
+
+      Serial.print(" T1=");
+      Serial.println(rmtBuffer[0].duration1);
     }
 
-    Serial.print("[SYNC] EVENTO escrava = ");
-    Serial.print(tEvento);
+    // ----------------------------------------------------------
+    // Rearma imediatamente
+    // ----------------------------------------------------------
 
-    Serial.print(" | delta VSYNC mestre = ");
+    rmtBufferSize = 8;
+
+    rmtReadAsync(
+        rmtVsyncIn,
+        rmtBuffer,
+        rmtBufferSize,
+        nullptr,
+        false,
+        0
+    );
+  }
+
+
+  // ============================================================
+  // CÁLCULO DA DIFERENÇA DE FASE
+  // Quando os dois eventos já foram recebidos
+  // ============================================================
+
+  if (vsyncMestreRecebido &&
+      vsyncEscravaRecebido)
+  {
+    int32_t delta =
+        (int32_t)(timestampVsyncEscrava -
+                  timestampVsyncMestre);
+
+    Serial.print("[FASE] Mestre = ");
+    Serial.print(timestampVsyncMestre);
+
+    Serial.print(" | Escrava = ");
+    Serial.print(timestampVsyncEscrava);
+
+    Serial.print(" | DELTA = ");
     Serial.print(delta);
 
     Serial.println(" us");
-  }
 
-  vsyncAnterior = vsyncAtual;
-  eventoEscravaAnterior = eventoEscravaAtual;
+    // ----------------------------------------------------------
+    // Limpa os eventos já utilizados.
+    // ----------------------------------------------------------
+
+    vsyncMestreRecebido = false;
+    vsyncEscravaRecebido = false;
+  }
 
 
   // ============================================================
-  // CAPTURA NORMAL DA CAMERA
+  // CAPTURA NORMAL DA CÂMERA
   // ============================================================
 
   if (captureRequested)
@@ -1066,11 +1251,15 @@ void loop()
 
     Serial.println("[CAPTURE] Trigger recebido.");
 
-    Serial.println("[CAPTURE] Capturando proximo frame...");
+    Serial.println(
+      "[CAPTURE] Capturando proximo frame..."
+    );
 
     camera->oneFrame();
 
-    Serial.println("[CAPTURE] Frame capturado.");
+    Serial.println(
+      "[CAPTURE] Frame capturado."
+    );
 
     displayRGB565(
       camera->frame,
