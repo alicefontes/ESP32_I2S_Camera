@@ -65,6 +65,22 @@ uint32_t timestampVsyncEscrava = 0;
 bool vsyncMestreRecebido = false;
 bool vsyncEscravaRecebido = false;
 
+// ============================================================
+// PAREAMENTO TEMPORAL DOS VSYNCs
+// ============================================================
+
+#define VSYNC_PERIODO_ESTIMADO_US 80000UL
+#define VSYNC_MIN_INTERVALO_US    20000UL
+
+uint32_t ultimoVsyncLocal = 0;
+uint32_t penultimoVsyncLocal = 0;
+
+bool existeUltimoVsyncLocal = false;
+bool existePenultimoVsyncLocal = false;
+
+uint32_t contadorFrameLocal = 0;
+uint32_t contadorFrameRemoto = 0;
+
 #define ssid1        "Wonderland"
 #define password1    "Fontes1995!"
 
@@ -861,6 +877,37 @@ void IRAM_ATTR eventoEscravaISR()
   eventoEscravaRecebido = true;
 }
 
+// ============================================================
+// NORMALIZA DELTA PELO PERIODO DO VSYNC
+//
+// Resultado:
+//   -40000 us ... +40000 us
+//
+// Assim:
+//   +1000 us = escrava 1 ms depois da mestre
+//   -1000 us = escrava 1 ms antes da mestre
+// ============================================================
+
+int32_t normalizarDeltaVSYNC(
+    int32_t delta,
+    uint32_t periodo
+)
+{
+  int32_t meioPeriodo = periodo / 2;
+
+  while (delta > meioPeriodo)
+  {
+    delta -= periodo;
+  }
+
+  while (delta < -meioPeriodo)
+  {
+    delta += periodo;
+  }
+
+  return delta;
+}
+
 void setup()
 {
   Serial.begin(115200);
@@ -1109,40 +1156,88 @@ void loop()
   // GPIO34
   // ============================================================
 
+  // ============================================================
+  // RMT RX - VSYNC DA MESTRE
+  // GPIO34
+  //
+  // O RMT captura a transição por hardware.
+  // Não há digitalRead() nem attachInterrupt().
+  // ============================================================
+
   if (rmtVsyncLocal != nullptr &&
       rmtReceiveCompleted(rmtVsyncLocal))
   {
-    // Momento em que o evento foi detectado pelo software.
-    // A borda em si foi capturada pelo periférico RMT.
+    uint32_t agora = micros();
 
-    timestampVsyncMestre = micros();
-
-    vsyncMestreRecebido = true;
-
-    Serial.print("[RMT LOCAL] VSYNC MESTRE = ");
-    Serial.println(timestampVsyncMestre);
+    bool novoVsyncValido = false;
 
     // ----------------------------------------------------------
-    // Mostra o símbolo capturado
+    // Primeiro VSYNC válido
     // ----------------------------------------------------------
 
-    if (rmtLocalBufferSize > 0)
+    if (!existeUltimoVsyncLocal)
     {
-      Serial.print("[RMT LOCAL] L0=");
-      Serial.print(rmtLocalBuffer[0].level0);
+      ultimoVsyncLocal = agora;
 
-      Serial.print(" T0=");
-      Serial.print(rmtLocalBuffer[0].duration0);
+      existeUltimoVsyncLocal = true;
 
-      Serial.print(" | L1=");
-      Serial.print(rmtLocalBuffer[0].level1);
+      contadorFrameLocal++;
 
-      Serial.print(" T1=");
-      Serial.println(rmtLocalBuffer[0].duration1);
+      novoVsyncValido = true;
     }
 
     // ----------------------------------------------------------
-    // Rearma imediatamente
+    // Próximos VSYNCs
+    //
+    // Ignora capturas muito próximas.
+    // Isso elimina a segunda captura espúria observada
+    // anteriormente (~470 us).
+    // ----------------------------------------------------------
+
+    else
+    {
+      uint32_t intervalo =
+          agora - ultimoVsyncLocal;
+
+      if (intervalo >= VSYNC_MIN_INTERVALO_US)
+      {
+        penultimoVsyncLocal = ultimoVsyncLocal;
+        existePenultimoVsyncLocal = true;
+
+        ultimoVsyncLocal = agora;
+
+        contadorFrameLocal++;
+
+        novoVsyncValido = true;
+      }
+    }
+
+    // ----------------------------------------------------------
+    // Informação do VSYNC aceito
+    // ----------------------------------------------------------
+
+    if (novoVsyncValido)
+    {
+      Serial.print("[RMT LOCAL] VSYNC MESTRE = ");
+      Serial.print(ultimoVsyncLocal);
+
+      if (existePenultimoVsyncLocal)
+      {
+        uint32_t periodo =
+            ultimoVsyncLocal - penultimoVsyncLocal;
+
+        Serial.print(" | periodo = ");
+        Serial.print(periodo);
+        Serial.println(" us");
+      }
+      else
+      {
+        Serial.println(" | primeiro VSYNC valido");
+      }
+    }
+
+    // ----------------------------------------------------------
+    // Rearma imediatamente o RMT
     // ----------------------------------------------------------
 
     rmtLocalBufferSize = 8;
@@ -1161,6 +1256,9 @@ void loop()
   // ============================================================
   // RMT RX - VSYNC DA ESCRAVA
   // GPIO23
+  //
+  // Cada evento remoto será pareado com o VSYNC mestre
+  // temporalmente mais próximo.
   // ============================================================
 
   if (rmtVsyncIn != nullptr &&
@@ -1168,13 +1266,13 @@ void loop()
   {
     timestampVsyncEscrava = micros();
 
-    vsyncEscravaRecebido = true;
+    contadorFrameRemoto++;
 
     Serial.print("[RMT REMOTO] VSYNC ESCRAVA = ");
     Serial.println(timestampVsyncEscrava);
 
     // ----------------------------------------------------------
-    // Mostra o símbolo capturado
+    // Mostra o símbolo recebido
     // ----------------------------------------------------------
 
     if (rmtBufferSize > 0)
@@ -1193,7 +1291,124 @@ void loop()
     }
 
     // ----------------------------------------------------------
-    // Rearma imediatamente
+    // PAREAMENTO TEMPORAL
+    // ----------------------------------------------------------
+
+    if (existeUltimoVsyncLocal)
+    {
+      uint32_t periodoAtual =
+          VSYNC_PERIODO_ESTIMADO_US;
+
+      // Se já temos dois VSYNCs locais válidos,
+      // usamos o período realmente medido.
+      if (existePenultimoVsyncLocal)
+      {
+        periodoAtual =
+            ultimoVsyncLocal - penultimoVsyncLocal;
+
+        // Proteção contra algum valor absurdo.
+        if (periodoAtual < 60000 ||
+            periodoAtual > 100000)
+        {
+          periodoAtual =
+              VSYNC_PERIODO_ESTIMADO_US;
+        }
+      }
+
+      // --------------------------------------------------------
+      // Diferença em relação ao último VSYNC local
+      // --------------------------------------------------------
+
+      int32_t deltaUltimo =
+          (int32_t)(
+              timestampVsyncEscrava -
+              ultimoVsyncLocal
+          );
+
+      deltaUltimo =
+          normalizarDeltaVSYNC(
+              deltaUltimo,
+              periodoAtual
+          );
+
+      // --------------------------------------------------------
+      // Diferença em relação ao penúltimo VSYNC local
+      // --------------------------------------------------------
+
+      int32_t deltaPenultimo = 0;
+
+      if (existePenultimoVsyncLocal)
+      {
+        deltaPenultimo =
+            (int32_t)(
+                timestampVsyncEscrava -
+                penultimoVsyncLocal
+            );
+
+        deltaPenultimo =
+            normalizarDeltaVSYNC(
+                deltaPenultimo,
+                periodoAtual
+            );
+      }
+
+      // --------------------------------------------------------
+      // Escolhe o VSYNC mestre mais próximo
+      // --------------------------------------------------------
+
+      uint32_t vsyncPareado;
+      int32_t deltaFase;
+
+      if (!existePenultimoVsyncLocal ||
+          abs(deltaUltimo) <= abs(deltaPenultimo))
+      {
+        vsyncPareado = ultimoVsyncLocal;
+        deltaFase = deltaUltimo;
+      }
+      else
+      {
+        vsyncPareado = penultimoVsyncLocal;
+        deltaFase = deltaPenultimo;
+      }
+
+      // --------------------------------------------------------
+      // FASE NORMALIZADA
+      // --------------------------------------------------------
+
+      float faseGraus =
+          ((float)deltaFase /
+          (float)periodoAtual) * 360.0f;
+
+      Serial.print("[FASE] Mestre = ");
+      Serial.print(vsyncPareado);
+
+      Serial.print(" | Escrava = ");
+      Serial.print(timestampVsyncEscrava);
+
+      Serial.print(" | DELTA = ");
+      Serial.print(deltaFase);
+
+      Serial.print(" us");
+
+      Serial.print(" | PERIODO = ");
+      Serial.print(periodoAtual);
+
+      Serial.print(" us");
+
+      Serial.print(" | FASE = ");
+      Serial.print(faseGraus, 3);
+
+      Serial.println(" graus");
+    }
+    else
+    {
+      Serial.println(
+          "[FASE] Aguardando primeiro VSYNC mestre valido."
+      );
+    }
+
+    // ----------------------------------------------------------
+    // Rearma imediatamente o RMT remoto
     // ----------------------------------------------------------
 
     rmtBufferSize = 8;
@@ -1207,39 +1422,6 @@ void loop()
         0
     );
   }
-
-
-  // ============================================================
-  // CÁLCULO DA DIFERENÇA DE FASE
-  // Quando os dois eventos já foram recebidos
-  // ============================================================
-
-  if (vsyncMestreRecebido &&
-      vsyncEscravaRecebido)
-  {
-    int32_t delta =
-        (int32_t)(timestampVsyncEscrava -
-                  timestampVsyncMestre);
-
-    Serial.print("[FASE] Mestre = ");
-    Serial.print(timestampVsyncMestre);
-
-    Serial.print(" | Escrava = ");
-    Serial.print(timestampVsyncEscrava);
-
-    Serial.print(" | DELTA = ");
-    Serial.print(delta);
-
-    Serial.println(" us");
-
-    // ----------------------------------------------------------
-    // Limpa os eventos já utilizados.
-    // ----------------------------------------------------------
-
-    vsyncMestreRecebido = false;
-    vsyncEscravaRecebido = false;
-  }
-
 
   // ============================================================
   // CAPTURA NORMAL DA CÂMERA
